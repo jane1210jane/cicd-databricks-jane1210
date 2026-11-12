@@ -1,0 +1,32 @@
+bundle:
+  name: github-free-edition-demo
+  databricks_cli_version: "= 1.26.0"
+
+variables:
+  catalog:
+    description: Existing catalog with permission to create a schema and table
+    default: workspace
+
+# Keep this path stable so repeated deployments update the same Job.
+workspace:
+  root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+
+resources:
+  jobs:
+    sales_demo:
+      name: github-free-edition-demo
+      max_concurrent_runs: 1
+      timeout_seconds: 600
+      tasks:
+        - task_key: run_demo
+          max_retries: 0
+          notebook_task:
+            notebook_path: ./src/etl_notebook.py
+            base_parameters:
+              catalog: ${var.catalog}
+              source_dir: ${workspace.file_path}/src
+          # Omit all cluster settings to use serverless notebook compute.
+
+targets:
+  free:
+    default: true

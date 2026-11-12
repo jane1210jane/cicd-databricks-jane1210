@@ -1,0 +1,86 @@
+name: Databricks Free Edition CI-CD
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Check Python syntax
+        run: python -m compileall -q src
+
+  deploy:
+    needs: test
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    concurrency:
+      group: databricks-free-deploy
+      cancel-in-progress: false
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      DATABRICKS_AUTH_TYPE: pat
+      BUNDLE_VAR_catalog: ${{ vars.DATABRICKS_CATALOG || 'workspace' }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # Prevent an old workflow rerun from replacing a newer main deployment.
+      - name: Require current main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+          if [[ "$main_sha" != "$GITHUB_SHA" ]]; then
+            echo "::error::This run is no longer the current main commit. Run the latest main workflow."
+            exit 1
+          fi
+
+      - uses: databricks/setup-cli@v1.26.0
+        with:
+          version: '1.26.0'
+
+      - name: Check Databricks authentication
+        shell: bash
+        run: |
+          if [[ -z "$DATABRICKS_HOST" || -z "$DATABRICKS_TOKEN" ]]; then
+            echo "::error::Set Repository secrets DATABRICKS_HOST and DATABRICKS_TOKEN."
+            exit 1
+          fi
+          databricks current-user me > /dev/null
+
+      - name: Validate bundle
+        run: databricks bundle validate --target free
+
+      - name: Deploy notebook and Job
+        run: databricks bundle deploy --target free --auto-approve --fail-on-active-runs
+
+      - name: Run and verify on Databricks
+        timeout-minutes: 15
+        run: databricks bundle run --target free sales_demo
